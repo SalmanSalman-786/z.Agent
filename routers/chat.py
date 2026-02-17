@@ -13,12 +13,16 @@ import asyncio
 import uuid
 import time
 
+
 router = APIRouter(prefix="/chat", tags=["Chat"])
+
 
 # Track active chat sessions
 active_sessions: Dict[str, Dict[str, Any]] = {}
 
+
 from utils.chroma_utils import get_chroma_db
+
 
 @router.post(
     "",
@@ -30,7 +34,7 @@ from utils.chroma_utils import get_chroma_db
 async def chat(request: ChatRequest):
     """
     Process a chat query and return a complete response with sources.
-    
+   
     - **query**: The user's question or message
     - **session_id**: Optional unique identifier for the chat session
     """
@@ -38,7 +42,7 @@ async def chat(request: ChatRequest):
         logging.info(f"Checking cache for query: {request.query}")
         cached_results = get_from_cache(request.query)
         logging.info(f"Cache results: {len(cached_results) if cached_results else 0} items")
-        
+       
         if cached_results:
             top_hit, score = cached_results[0]
             logging.info(f"Top hit: {top_hit.page_content[:50]}..., score: {score}")
@@ -58,12 +62,13 @@ async def chat(request: ChatRequest):
                     return ChatResponse(response=answer, sources=sources, suggestions=[], feedback_enabled=True)
                 except Exception as e:
                     logging.error(f"Error processing cached response: {str(e)}")
-                    # Even if there's an error with saving to cache, 
+                    # Even if there's an error with saving to cache,
                     # we should still return the cached answer
                     answer = top_hit.metadata.get("answer", "")
                     sources = [f"[CACHED - {top_hit.metadata.get('source', 'unknown')} - similarity: {similarity:.2f}]"]
                     logging.info("Returning cached response despite error")
                     return ChatResponse(response=answer, sources=sources, suggestions=[], feedback_enabled=True)
+
 
         # Check if Gemini calls are disabled
         if settings.disable_gemini_call:
@@ -75,18 +80,20 @@ async def chat(request: ChatRequest):
             await save_to_temp_cache(request.query, answer, sources, source="no_match")
             return ChatResponse(response=answer, sources=sources, suggestions=[], feedback_enabled=False)
 
+
         logging.info("Calling Gemini API")
         chain = get_rag_chain()
         response, sources = process_query(chain, request.query)
         logging.info(f"Processed query with Gemini: {request.query}")
-        
+       
         # Save to temporary cache with source information
         await save_to_temp_cache(request.query, response, sources, source="gemini")
-        
+       
         return ChatResponse(response=response, sources=sources, suggestions=[], feedback_enabled=True)
     except Exception as e:
         logging.error(f"Error processing chat query: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 async def stream_response(query: str, session_id: str) -> AsyncGenerator[dict, None]:
     """Generate a streaming response for the chat query."""
@@ -108,17 +115,18 @@ async def stream_response(query: str, session_id: str) -> AsyncGenerator[dict, N
                 answer = top_hit.metadata.get("answer", "")
                 sources = [f"[CACHED - {top_hit.metadata.get('source', 'unknown')} - similarity: {similarity:.2f}]"]
 
+
                 # Stream the cached answer word by word
                 words = answer.split()
                 for word in words:
                     yield {"event": "message", "data": f"{word} "}
                     await asyncio.sleep(0.05)
-                
+               
                 yield {"event": "sources", "data": ",".join(sources)}
                 yield {"event": "suggestions", "data": ""}
                 yield {"event": "metadata", "data": json.dumps({"feedback_enabled": True})}
                 yield {"event": "done", "data": ""}
-                
+               
                 # Save to temporary cache with source information
                 await save_to_temp_cache(query, answer, sources, source="cache")
                 logging.info("Finished streaming cached response")
@@ -126,33 +134,35 @@ async def stream_response(query: str, session_id: str) -> AsyncGenerator[dict, N
             else:
                 logging.info("Cache match found but similarity below threshold")
 
+
         # Check if Gemini calls are disabled
         if settings.disable_gemini_call:
             logging.info("Gemini calls disabled, returning formal message")
             # Return formal message when no cache match and Gemini is disabled
             answer = "We don't have much information about that please ask chatgpt regarding this"
             sources = ["[NO_MATCH_IN_CACHE]"]
-            
+           
             # Stream the formal message word by word
             words = answer.split()
             for word in words:
                 yield {"event": "message", "data": f"{word} "}
                 await asyncio.sleep(0.05)
-            
+           
             yield {"event": "sources", "data": ",".join(sources)}
             yield {"event": "suggestions", "data": ""}
             yield {"event": "metadata", "data": json.dumps({"feedback_enabled": False})}
             yield {"event": "done", "data": ""}
-            
+           
             # Save to temporary cache with source information
             await save_to_temp_cache(query, answer, sources, source="no_match")
             logging.info("Finished streaming formal message")
             return
 
+
         logging.info("Calling Gemini API for streaming response")
         # Use the streaming chain for all responses to ensure consistency
         chain = get_streaming_chain()
-        
+       
         # Get retriever separately to collect sources
         from utils.chroma_utils import get_chroma_db
         # Retrieve more documents initially and filter by similarity threshold
@@ -165,13 +175,16 @@ async def stream_response(query: str, session_id: str) -> AsyncGenerator[dict, N
         docs = filtered_docs[:settings.max_context_docs] if filtered_docs else []
         sources = [doc.metadata.get("source", "") for doc in docs if doc.metadata.get("source")]
 
+
         # If not in cache and Gemini is enabled, proceed with the streaming chain
         if session_id not in active_sessions:
             active_sessions[session_id] = {"created_at": time.time(), "queries": []}
         active_sessions[session_id]["queries"].append(query)
         active_sessions[session_id]["last_active"] = time.time()
 
+
         full_response = []
+
 
         async for chunk in chain.astream(query):  # Now we can pass just the query
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
@@ -179,25 +192,44 @@ async def stream_response(query: str, session_id: str) -> AsyncGenerator[dict, N
             yield {"event": "message", "data": content}
             await asyncio.sleep(0.01)
 
+
         final_response = "".join(full_response)
+
 
         yield {"event": "sources", "data": ",".join(sources)}
         yield {"event": "suggestions", "data": ""}
         yield {"event": "metadata", "data": json.dumps({"feedback_enabled": True})}
         yield {"event": "done", "data": ""}
 
+
         # Save the complete response to the temporary cache with source information
         await save_to_temp_cache(query, final_response, sources, source="gemini")
         logging.info("Finished streaming Gemini response")
 
+
     except Exception as e:
-        error_message = str(e)
+        error_message = str(e).lower()
         logging.error(f"Error in streaming response: {error_message}")
-        if "429" in error_message:
-            user_message = "We are currently experiencing high traffic. Please try again in a few moments."
-            yield {"event": "error", "data": user_message}
+
+
+        if "api key" in error_message:
+            user_message = "⚠️ AI service configuration issue."
+
+
+        elif "quota" in error_message or "429" in error_message:
+            user_message = "⚠️ AI quota exceeded. Please try later."
+
+
+        elif "timeout" in error_message:
+            user_message = "⚠️ AI response timeout."
+
+
         else:
-            yield {"event": "error", "data": error_message}
+            user_message = "⚠️ AI service temporarily unavailable."
+
+
+        yield {"event": "error", "data": user_message}
+
 
 @router.post(
     "/stream",
@@ -208,17 +240,18 @@ async def stream_response(query: str, session_id: str) -> AsyncGenerator[dict, N
 async def stream_chat(request: StreamingChatRequest):
     """
     Stream a chat response in real-time using Server-Sent Events (SSE).
-    
+   
     - **query**: The user's question or message
     - **session_id**: Optional unique identifier for the chat session
     """
     if not request.session_id:
         request.session_id = str(uuid.uuid4())
-    
+   
     return EventSourceResponse(
         stream_response(request.query, request.session_id),
         media_type="text/event-stream"
     )
+
 
 @router.post(
     "/feedback",
@@ -229,7 +262,7 @@ async def stream_chat(request: StreamingChatRequest):
 async def submit_feedback(feedback: FeedbackRequest):
     """
     Submit feedback for a chat response.
-    
+   
     - **session_id**: Unique identifier for the chat session
     - **query**: The user's query
     - **response**: The AI-generated response
@@ -255,11 +288,12 @@ async def submit_feedback(feedback: FeedbackRequest):
         success = await save_feedback(feedback_data)
         if not success:
             raise HTTPException(status_code=500, detail="Failed to save feedback")
-        
+       
         return {"message": "Feedback submitted successfully"}
     except Exception as e:
         logging.error(f"Error submitting feedback: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.delete(
     "/sessions/{session_id}",
@@ -270,13 +304,14 @@ async def submit_feedback(feedback: FeedbackRequest):
 async def delete_session(session_id: str):
     """
     Delete a chat session by its ID.
-    
+   
     - **session_id**: The ID of the session to delete
     """
     if session_id in active_sessions:
         del active_sessions[session_id]
         return {"message": f"Session {session_id} deleted successfully"}
     raise HTTPException(status_code=404, detail="Session not found")
+
 
 @router.get(
     "/sessions",
@@ -288,26 +323,27 @@ async def list_sessions():
     """List all active chat sessions with metadata."""
     return {
         "sessions": [
-            {"id": session_id, "created_at": data["created_at"], 
+            {"id": session_id, "created_at": data["created_at"],
              "last_active": data.get("last_active"), "query_count": len(data.get("queries", []))}
             for session_id, data in active_sessions.items()
         ]
     }
 
+
 @router.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """
     WebSocket endpoint for streaming chat responses specifically for React Native apps.
-    
+   
     - **session_id**: Unique identifier for the chat session
     """
     await websocket.accept()
-    
+   
     try:
         while True:
             # Receive message from React Native app
             data = await websocket.receive_text()
-            
+           
             # Try to parse as JSON first
             try:
                 json_data = json.loads(data)
@@ -315,16 +351,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             except json.JSONDecodeError:
                 # If not JSON, treat the entire message as the query
                 query = data
-            
+           
             if not query:
                 await websocket.send_json({"event": "error", "data": "No query provided"})
                 continue
-                
+               
             # Process the query using the existing streaming logic
             async for event in stream_response(query, session_id):
                 # Send each event over WebSocket
                 await websocket.send_json(event)
-                
+               
     except Exception as e:
         logging.error(f"WebSocket error: {str(e)}")
         await websocket.close()
+
+
+

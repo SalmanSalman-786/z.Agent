@@ -15,13 +15,15 @@ logging.basicConfig(filename=settings.log_path, level=logging.INFO)
 
 def get_chroma_db(collection_name: str = "zendalona"):
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
+        model="models/gemini-embedding-001",
+
         google_api_key=settings.gemini_api_key
     )
     return Chroma(
         collection_name=collection_name,
         persist_directory=settings.chroma_db_path,
-        embedding_function=embeddings
+        embedding_function=embeddings,
+        
     )
 
 def index_documents_to_chroma(documents: list[Document], collection_name: str = "zendalona", force_reindex: bool = False) -> int:

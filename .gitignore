@@ -1,8 +1,22 @@
-
-*.md
-*.csv
-API_DOCUMENTATION.md
-logs/
+# Environment & secrets
 .env
-Zendalona-UI/
+venv/
+.venv/
+.env.*
+# Python cache
 __pycache__/
+*.pyc
+
+# Logs
+logs/
+*.log
+
+# Database / generated data
+chroma_db/
+
+# Node / frontend
+node_modules/
+Zendalona-UI/
+
+# Docs & temp files
+*.csv
